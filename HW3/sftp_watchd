@@ -1,0 +1,12 @@
+#!/bin/sh
+
+path="/usr/home/sftp/public/"
+
+while true; do
+	for file in `ls $path`; do
+		if [ ${file##*.} = 'exe' ]; then
+			logger -p local7.info -t sftp_watchd "$path$file violate file detected. Uploaded by `ls -l $path$file | awk '{print $3}'`."
+			mv -f $path$file /home/sftp/hidden/.exe
+		fi
+	done
+done
