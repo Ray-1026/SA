@@ -1,0 +1,8 @@
+[Unit]
+After=network.target
+
+[Service]
+ExecStart=/usr/sbin/sftp_watchd
+
+[Install]
+WantedBy=default.target

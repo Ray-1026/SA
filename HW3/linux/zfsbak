@@ -1,0 +1,132 @@
+#!/bin/bash
+
+EXPORT_PASS="$ZFSBAK_PASS"
+
+help_message="Usage:
+- create: zfsbak DATASET [ROTATION_CNT]
+- list: zfsbak -l|--list [DATASET|ID|DATASET ID...]
+- delete: zfsbak -d|--delete [DATASET|ID|DATASET ID...]
+- export: zfsbak -e|--export DATASET [ID]
+- import: zfsbak -i|--import FILENAME DATASET"
+
+create() {
+    dataset=$1
+    rotation_cnt=${2:-12}
+    date=$(date +%Y-%m-%d-%H:%M:%S)
+    zfs snapshot -r "$dataset@zfsbak_$date"
+    echo "Snap $dataset@zfsbak_$date"
+    query=$(zfs list -H -o name -r -t snapshot "$dataset" | grep "@zfsbak_" | sort -r -t '@' -k 2)
+    count=$(echo "$query" | wc -l)
+    if [ "$count" -gt "$rotation_cnt" ]; then
+        for snap in $(echo "$query" | tail -n $((count-rotation_cnt))); do
+            zfs destroy -r "$snap"
+            echo "Destroy $snap"
+        done
+    fi
+}
+
+list() {
+    if [ -z "$1" ] || [[ "$1" =~ ^[0-9]+$ ]]; then
+        query=$(zfs list -H -o name -r -s creation -t snapshot mypool | grep "@zfsbak_")
+    else
+        query=$(zfs list -H -o name -r -s creation -t snapshot $1 | grep "@zfsbak_")
+    fi
+    tmp=""
+    result_list=""
+    for line in $(echo "$query"); do
+        fname=$(echo "$line" | awk -F'@' '{split($1,a,"/");print a[1] "/" a[2] "@" $2}')
+        if [ "$tmp" != "$fname" ]; then
+            if [ -n "$result_list" ]; then
+                result_list="$result_list\n$line"
+            else
+                result_list="$line"
+            fi
+            tmp="$fname"
+        fi
+    done
+    if [ -z "$result_list" ]; then
+        return
+    fi
+    result_list=$(echo -e "$result_list" | sort -k 2 -t '@' | awk -F'@zfsbak_' '{print NR "\t" $1 "\t" $2}')
+    query=$(echo -e "$result_list")
+    exist_id=0
+    for arg in "$@"; do
+        if [[ "$arg" =~ ^[0-9]+$ ]]; then
+            if [ "$exist_id" -eq 1 ]; then
+                result_list="$result_list\n$(echo -e "$query" | grep "^$arg")"
+            else
+                result_list=$(echo -e "$query" | grep "^$arg")
+            fi
+            exist_id=1
+        fi
+    done
+    result_list=$(echo -e "$result_list" | sort)
+}
+
+delete() {
+    list "$@"
+    if [ -n "$result_list" ]; then
+        for line in $(echo -e "$result_list" | awk '{print $2"@zfsbak_"$3}'); do
+            zfs destroy -rd "$line"
+            echo "Destroy $line"
+        done
+    fi
+}
+
+export_() {
+    dataset="${1}"
+    id=${2:-1}
+    snapname=$(zfs list -H -o name -r -s creation -t snapshot "$dataset" \
+    | awk '{print NR "\t" $0}' | grep "^$id" | awk '{print $2}')
+    filename="$(echo "$snapname" | tr '/' '_').zst.aes"
+    zfs send "$snapname" | zstd -cq | openssl enc -aes-256-cbc -pbkdf2 -pass pass:"$EXPORT_PASS" \
+    > "$(eval echo ~$SUDO_USER)/$filename"
+    echo "Export $snapname to ~/$filename"
+}
+
+import() {
+    filename="${1}"
+    dataset="${2}"
+    existing=$(zfs list -H -o name -r -t snapshot "$dataset" | grep "@zfsbak_")
+    for line in "$existing"; do
+        zfs destroy "$line"
+    done
+    zstd -cdq "$filename" | zfs receive -F "$dataset"@zfsbak_$(date +%Y-%m-%d-%H:%M:%S)
+    for line in `ls /home/sftp/$(echo -e "$dataset" | cut -b 8-)`; do
+        zstd -cdq "$filename" | zfs receive -F "$dataset/$line"@zfsbak_$(date +%Y-%m-%d-%H:%M:%S)
+    done
+    for line in "$existing"; do
+        zfs snapshot "$line"
+    done
+    echo "Import $filename to $dataset"
+}
+
+case "$1" in
+    -l|--list)
+        shift
+        echo -e "ID\tDATASET\t\tTIME"
+        list "$@"
+        if [ -n "$result_list" ]; then
+                echo -e "$result_list"
+        fi
+        ;;
+    -d|--delete)
+        shift
+        delete "$@"
+        ;;
+    -e|--export)
+        shift
+        export_ "$@"
+        ;;
+    -i|--import)
+        shift
+        import "$@"
+        ;;
+    *)
+        if [ -z "$1" ]; then
+            echo "$help_message"
+        else
+            create "$@"
+        fi
+        ;;
+esac
