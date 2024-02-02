@@ -1,8 +1,10 @@
 [Unit]
-After=network.target
+Description=Sftp watchd
 
 [Service]
 ExecStart=/usr/sbin/sftp_watchd
+Restart=on-failure
+RestartSec=1s
 
 [Install]
 WantedBy=default.target
